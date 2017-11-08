@@ -157,6 +157,7 @@ def discriminator(images, reuse=False):
     
     alpha = 0.2
     with tf.variable_scope('discriminator', reuse=reuse):
+        '''
         # Input layer is 28x28x3
         x1 = tf.layers.conv2d(images, 64, 5, strides=2, padding='same')
         relu1 = tf.maximum(alpha * x1, x1)
@@ -171,11 +172,41 @@ def discriminator(images, reuse=False):
         bn3 = tf.layers.batch_normalization(x3, training=True)
         relu3 = tf.maximum(alpha * bn3, bn3)
         # 4x4x256
+        '''
+        '''review suggestion
+        如果要进一步的提升模型的效率，可以使用0.8概率的dropout和用Xavier初始化权重。
+        Xavier可以通过下面的方法实现，在tf.layers.conv2d中，将-tf.contrib.layers.xavier_initializer()
+        传入作为kernel_initializerparameter的值。
+        Xavier可以加速你的模型收敛的过程，因为这个例子中，我们故意选择了较小的epoch，鼓励你们能够优化模型达到不错的效果，
+        所以如果使用了更好的权重初始化方法，就由可能获得更好的结果。
+        其次，Xavier有可能增加模型收敛到更低的loss的可能性。
+        '''
+        # Input layer is 28x28x3
+        x1 = tf.layers.conv2d(images, 64, 5, strides=2, padding='same',
+                            kernel_initializer=tf.contrib.layers.xavier_initializer())
+        relu1 = tf.maximum(alpha * x1, x1)
+        x1 = tf.nn.dropout(x1, keep_prob=0.8)
+        # 14x14x64
+        
+        x2 = tf.layers.conv2d(x1, 128, 5, strides=2, padding='same',
+                            kernel_initializer=tf.contrib.layers.xavier_initializer())
+        bn2 = tf.layers.batch_normalization(x2, training=True)
+        relu2 = tf.maximum(alpha * bn2, bn2)
+        x2 = tf.nn.dropout(x2, keep_prob=0.8)
+        # 7x7x128
+        
+        x3 = tf.layers.conv2d(x2, 256, 5, strides=2, padding='same',
+                            kernel_initializer=tf.contrib.layers.xavier_initializer())
+        bn3 = tf.layers.batch_normalization(x3, training=True)
+        relu3 = tf.maximum(alpha * bn3, bn3)
+        x3 = tf.nn.dropout(x3, keep_prob=0.8)
+        # 4x4x256
         
         # Flatten it
         flat = tf.reshape(relu3, (-1, 4*4*256))
         logits = tf.layers.dense(flat, 1)
         out = tf.sigmoid(logits)
+
         
         return out, logits
 
@@ -213,16 +244,19 @@ def generator(z, out_channel_dim, is_train=True):
         x1 = tf.reshape(x1, (-1, 2, 2, 512))
         x1 = tf.layers.batch_normalization(x1, training=is_train)
         x1 = tf.maximum(alpha * x1, x1)
+        x1 = tf.nn.dropout(x1, 0.8)
         # 2x2x512 now
 
         x2 = tf.layers.conv2d_transpose(x1, 256, 5, strides=2, padding='valid')
         x2 = tf.layers.batch_normalization(x2, training=is_train)
         x2 = tf.maximum(alpha * x2, x2)
+        x2 = tf.nn.dropout(x2, 0.8)
         # 7x7x256
         
         x3 = tf.layers.conv2d_transpose(x2, 128, 5, strides=2, padding='same')
         x3 = tf.layers.batch_normalization(x3, training=is_train)
         x3 = tf.maximum(alpha * x3, x3)
+        x3 = tf.nn.dropout(x3, 0.8)
         # 14x14x128 now
 
         # Output layer
@@ -261,11 +295,16 @@ def model_loss(input_real, input_z, out_channel_dim):
     # 参考：https://github.com/udacity/cn-deep-learning/blob/master/tutorials/dcgan-svhn/DCGAN.ipynb
     
     g_model = generator(input_z, out_channel_dim, is_train=True)
+    """review suggestion
+    为了防止discriminator太强，同时也为了让它能够更有泛化能力，一般会将disc_label_real乘以0.9。这叫做标签的（单侧）平滑化。
+    也可以通过labels = tf.ones_like(tensor) * (1 - smooth) 来实现。
+    """
     d_model_real, d_logits_real = discriminator(input_real, reuse=False)
     d_model_fake, d_logits_fake = discriminator(g_model, reuse=True)
     
+    smooth=0.1
     d_loss_real = tf.reduce_mean(
-        tf.nn.sigmoid_cross_entropy_with_logits(logits=d_logits_real, labels=tf.ones_like(d_model_real)))
+        tf.nn.sigmoid_cross_entropy_with_logits(logits=d_logits_real, labels=tf.ones_like(d_model_real) * (1 - smooth)))
     d_loss_fake = tf.reduce_mean(
         tf.nn.sigmoid_cross_entropy_with_logits(logits=d_logits_fake, labels=tf.zeros_like(d_model_fake)))
     g_loss = tf.reduce_mean(
@@ -360,7 +399,7 @@ def show_generator_output(sess, n_images, input_z, out_channel_dim, image_mode):
 # 
 # **注意**：在每个批次 (batch) 中运行 `show_generator_output` 函数会显著增加训练时间与该 notebook 的体积。推荐每 100 批次输出一次 `generator` 的输出。 
 
-# In[13]:
+# In[11]:
 
 def train(epoch_count, batch_size, z_dim, learning_rate, beta1, get_batches, data_shape, data_image_mode):
     """
@@ -390,6 +429,13 @@ def train(epoch_count, batch_size, z_dim, learning_rate, beta1, get_batches, dat
             for batch_images in get_batches(batch_size):
                 # TODO: Train Model
                 steps += 1
+                """review suggestion
+                这里由于generator的输出应用了tanh，tanh函数输出在-1到1之间，但是batch_images的范围在-0.5到0.5之间，
+                所以这个地方需要将real image的范围rescale到-1到1之间，这里可以通过batch_images = batch_images*2来实现，
+                这样给discriminator传入的real image和generator的fake image就在相同的范围了
+                """
+                batch_images *= 2
+                
                 batch_z = np.random.uniform(-1, 1, size = [batch_size, z_dim])
                                
                 feed_dict = {input_real: batch_images,input_z: batch_z,learn_rate: learning_rate}
@@ -415,10 +461,21 @@ def train(epoch_count, batch_size, z_dim, learning_rate, beta1, get_batches, dat
 # ### MNIST
 # 在 MNIST 上测试你的 GANs 模型。经过 2 次迭代，GANs 应该能够生成类似手写数字的图像。确保生成器 (generator) 低于辨别器 (discriminator) 的损失，或接近 0。
 
-# In[14]:
+# In[12]:
 
-batch_size = 128
-z_dim = 100
+"""review suggestion
+
+注意我们的参数最好设置成2的倍数，比如4、8、16、32、64。这样可以让tensorflow在计算的时候进行优化，
+让模型训练更加迅速。Batch size 主要影响的是你GAN生成的图片质量，下面给一些关于参数设置的建议：
+
+● 对于celeA这个数据集来说，由于它包含了许多大图像，所以Batch size设置为16或者32比较合适。
+● 对于MNIST这个数据集来说，图像相对较小，只是28 * 28 的黑白色图形，所以Batch size 设置为32 或者64。
+● 在GAN中，learning rate 设置为0.0002应该不错，但是有些稍微提高一点能够有效地减少你训练的时间（0.001左右）。
+● Beta1 在0.5或0.4左右的话也不错。
+
+"""
+batch_size = 64
+z_dim = 128
 learning_rate = 0.0002
 beta1 = 0.5
 
@@ -437,10 +494,10 @@ with tf.Graph().as_default():
 # ### CelebA
 # 在 CelebA 上运行你的 GANs 模型。在一般的GPU上运行每次迭代大约需要 20 分钟。你可以运行整个迭代，或者当 GANs 开始产生真实人脸图像时停止它。
 
-# In[15]:
+# In[13]:
 
-batch_size = 128
-z_dim = 100
+batch_size = 32
+z_dim = 128
 learning_rate = 0.0002
 beta1 = 0.5
 
